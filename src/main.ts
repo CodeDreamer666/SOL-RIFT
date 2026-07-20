@@ -16,6 +16,7 @@ import type {
   RunStats,
   Settings
 } from "./types";
+import { DASH_COOLDOWN_SECONDS } from "./physics";
 import {
   APP_TEMPLATE,
   formatScore,
@@ -150,7 +151,7 @@ function updateHud(stats: RunStats): void {
   const dashButton = element<HTMLButtonElement>("#dash-action");
   dashButton.style.setProperty(
     "--cooldown",
-    `${Math.min(100, (stats.dashCooldown / 2.45) * 100)}%`
+    `${Math.min(100, (stats.dashCooldown / DASH_COOLDOWN_SECONDS) * 100)}%`
   );
   dashButton.classList.toggle("is-cooling", stats.dashCooldown > 0);
   document

@@ -238,7 +238,7 @@ export const APP_TEMPLATE = `
           <div><kbd>SPACE</kbd><span><strong>JUMP</strong>Low barriers, broken floors, wall kick</span></div>
           <div><kbd>S</kbd><span><strong>SLIDE</strong>Overhead frames and high laser lines</span></div>
           <div><kbd>Q</kbd><kbd>E</kbd><span><strong>DODGE</strong>Fast lateral burst / 1.05s cooldown</span></div>
-          <div><kbd>SHIFT</kbd><span><strong>DASH</strong>Closing gates / 2.45s cooldown</span></div>
+          <div><kbd>SHIFT</kbd><span><strong>DASH</strong>Closing gates / 0.3s cooldown</span></div>
           <div><kbd>ESC</kbd><span><strong>PAUSE</strong>Also pauses automatically when focus is lost</span></div>
           <div><kbd>M</kbd><span><strong>MUTE</strong>Toggle all generated audio</span></div>
           <div><kbd>R</kbd><span><strong>RESTART</strong>Instant restart after a run</span></div>

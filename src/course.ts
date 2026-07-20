@@ -1,4 +1,9 @@
 import { DIFFICULTIES, SEGMENT_LENGTH } from "./config";
+import {
+  calculateDashDistance,
+  calculateJumpDistance,
+  calculateJumpHeight
+} from "./physics";
 import { SeededRandom } from "./rng";
 import type {
   ActionName,
@@ -17,9 +22,63 @@ const ENVIRONMENTS: EnvironmentKind[] = [
   "reactor"
 ];
 
-const ACTION_SPACING = 7.5;
-const MAX_JUMP_GAP = 10;
-const MAX_WALLRUN_GAP = 25;
+export const MIN_OBSTACLE_SPACING = 8;
+export const COURSE_SAFETY_MARGIN = 0.75;
+const MAX_GENERATION_ATTEMPTS = 16;
+const GENERATION_CLEARANCE_EPSILON = 0.05;
+const WALLRUN_DURATION_SECONDS = 1.55;
+const REACTION_SECONDS: Record<Difficulty, number> = {
+  easy: 1,
+  normal: 0.9,
+  hard: 0.8
+};
+
+interface ChallengeSpan {
+  id: string;
+  startZ: number;
+  endZ: number;
+}
+
+export function requiredClearSpacing(
+  speed: number,
+  difficulty: Difficulty
+): number {
+  return (
+    Math.max(
+      MIN_OBSTACLE_SPACING,
+      speed * REACTION_SECONDS[difficulty]
+    ) + COURSE_SAFETY_MARGIN
+  );
+}
+
+function expectedSpeedAtDistance(
+  distance: number,
+  difficulty: Difficulty
+): number {
+  const config = DIFFICULTIES[difficulty];
+  return Math.min(
+    config.maxSpeed,
+    Math.sqrt(
+      config.startSpeed * config.startSpeed +
+        2 * config.acceleration * Math.max(0, distance)
+    )
+  );
+}
+
+function challengeSpans(plan: CoursePlan): ChallengeSpan[] {
+  return [
+    ...plan.hazards.map((item) => ({
+      id: item.id,
+      startZ: plan.startZ + item.localZ - item.depth / 2,
+      endZ: plan.startZ + item.localZ + item.depth / 2
+    })),
+    ...plan.gaps.map((gap, index) => ({
+      id: `${plan.index}-gap-${index}`,
+      startZ: plan.startZ + gap.startZ,
+      endZ: plan.startZ + gap.endZ
+    }))
+  ].sort((left, right) => left.startZ - right.startZ);
+}
 
 function hazard(
   id: string,
@@ -58,6 +117,10 @@ function createPattern(
   difficulty: Difficulty
 ): void {
   const warning = DIFFICULTIES[difficulty].warningDistance;
+  const clearSpacing = requiredClearSpacing(
+    plan.expectedSpeed,
+    difficulty
+  );
   const phase = random.range(0, Math.PI * 2);
   const addAction = (action: ActionName, localZ: number): void => {
     plan.recommendedActions.push({ action, localZ });
@@ -77,6 +140,23 @@ function createPattern(
         risky
       });
     }
+  };
+  const comboPositions = (
+    firstDepth: number,
+    secondDepth: number,
+    mustLandAfterFirst = false
+  ): [number, number] => {
+    const landingSpacing = mustLandAfterFirst
+      ? calculateJumpDistance(plan.expectedSpeed) + COURSE_SAFETY_MARGIN
+      : 0;
+    const clearDistance =
+      Math.max(clearSpacing, landingSpacing) +
+      GENERATION_CLEARANCE_EPSILON;
+    const first = 11 + firstDepth / 2;
+    return [
+      first,
+      first + firstDepth / 2 + clearDistance + secondDepth / 2
+    ];
   };
 
   switch (pattern) {
@@ -185,12 +265,13 @@ function createPattern(
       addAction("dash", 25);
       collectLine(0, 21, 5, false, 1.4);
       break;
-    case "jumpSlide":
+    case "jumpSlide": {
+      const [jumpZ, slideZ] = comboPositions(1, 2, true);
       plan.hazards.push(
         hazard(
           `${plan.index}-combo-jump`,
           "barrier",
-          17,
+          jumpZ,
           0,
           0.65,
           12,
@@ -202,7 +283,7 @@ function createPattern(
         hazard(
           `${plan.index}-combo-slide`,
           "overhead",
-          30,
+          slideZ,
           0,
           2.2,
           12,
@@ -212,17 +293,19 @@ function createPattern(
           warning
         )
       );
-      addAction("jump", 17);
-      addAction("slide", 30);
-      collectLine(0, 18, 6, true, 1.6);
+      addAction("jump", jumpZ);
+      addAction("slide", slideZ);
+      collectLine(0, jumpZ + 1, 6, true, 1.6);
       break;
+    }
     case "dodgeDash": {
       const dodge = random.next() > 0.5 ? "dodgeLeft" : "dodgeRight";
+      const [dodgeZ, dashZ] = comboPositions(2, 1.2);
       plan.hazards.push(
         hazard(
           `${plan.index}-combo-dodge`,
           "moving",
-          17,
+          dodgeZ,
           0,
           1.25,
           2.5,
@@ -240,7 +323,7 @@ function createPattern(
         hazard(
           `${plan.index}-combo-dash`,
           "dashGate",
-          30,
+          dashZ,
           0,
           1.55,
           12,
@@ -250,9 +333,9 @@ function createPattern(
           warning
         )
       );
-      addAction(dodge, 17);
-      addAction("dash", 30);
-      collectLine(dodge === "dodgeLeft" ? 3 : -3, 18, 5, true);
+      addAction(dodge, dodgeZ);
+      addAction("dash", dashZ);
+      collectLine(dodge === "dodgeLeft" ? 3 : -3, dodgeZ + 1, 5, true);
       break;
     }
     case "wallrun": {
@@ -281,12 +364,13 @@ function createPattern(
     }
     case "splitRoute": {
       const safeSide = random.next() > 0.5 ? -1 : 1;
+      const [routeZ, jumpZ] = comboPositions(3.2, 1);
       plan.safeRouteX = safeSide * 3.6;
       plan.hazards.push(
         hazard(
           `${plan.index}-route`,
           "routeBlock",
-          24,
+          routeZ,
           -safeSide * 3.3,
           1.4,
           5.5,
@@ -300,7 +384,7 @@ function createPattern(
         hazard(
           `${plan.index}-safe-low`,
           "barrier",
-          31,
+          jumpZ,
           safeSide * 3.3,
           0.55,
           4.9,
@@ -310,29 +394,21 @@ function createPattern(
           warning
         )
       );
-      addAction(safeSide === 1 ? "dodgeLeft" : "dodgeRight", 20);
-      addAction("jump", 31);
-      collectLine(-safeSide * 4.2, 17, 9, true, 1.4);
+      addAction(
+        safeSide === 1 ? "dodgeLeft" : "dodgeRight",
+        routeZ
+      );
+      addAction("jump", jumpZ);
+      collectLine(-safeSide * 4.2, routeZ + 1, 9, true, 1.4);
       break;
     }
-    case "laserGrid":
+    case "laserGrid": {
+      const [highZ, lowZ] = comboPositions(0.5, 0.5);
       plan.hazards.push(
-        hazard(
-          `${plan.index}-laser-low`,
-          "laserLow",
-          20,
-          0,
-          0.85,
-          12,
-          0.16,
-          0.5,
-          "jump",
-          warning
-        ),
         hazard(
           `${plan.index}-laser-high`,
           "laserHigh",
-          32,
+          highZ,
           0,
           1.7,
           12,
@@ -340,12 +416,25 @@ function createPattern(
           0.5,
           "slide",
           warning
+        ),
+        hazard(
+          `${plan.index}-laser-low`,
+          "laserLow",
+          lowZ,
+          0,
+          0.85,
+          12,
+          0.16,
+          0.5,
+          "jump",
+          warning
         )
       );
-      addAction("jump", 20);
-      addAction("slide", 32);
-      collectLine(0, 18, 8);
+      addAction("slide", highZ);
+      addAction("jump", lowZ);
+      collectLine(0, highZ - 2, 12);
       break;
+    }
     case "collapse":
       plan.gaps.push({
         startZ: 24,
@@ -409,13 +498,12 @@ function createPattern(
 export function generateCoursePlan(
   index: number,
   difficulty: Difficulty,
-  runSeed: number
+  runSeed: number,
+  previousPlan?: CoursePlan
 ): CoursePlan {
-  const seed = (runSeed + index * 2_654_435_761) >>> 0;
-  const random = new SeededRandom(seed);
   const config = DIFFICULTIES[difficulty];
   const intensity = Math.min(1, index / (difficulty === "hard" ? 14 : 22));
-  let availablePatterns = config.patterns.filter((pattern) => {
+  const availablePatterns = config.patterns.filter((pattern) => {
     if (pattern === "jumpSlide" || pattern === "dodgeDash") {
       return index >= config.comboUnlock / 3;
     }
@@ -424,24 +512,64 @@ export function generateCoursePlan(
     }
     return true;
   });
-
-  if (index < 2) {
-    availablePatterns = ["breather", index === 0 ? "jump" : "slide"];
-  }
-
   const recoveryDue =
     index > 1 && index % config.recoveryEvery === config.recoveryEvery - 1;
-  const pattern = recoveryDue
-    ? "breather"
-    : random.pick(availablePatterns);
-  const environment = random.pick(ENVIRONMENTS);
-  const plan: CoursePlan = {
+  const expectedSpeed = expectedSpeedAtDistance(
+    index * SEGMENT_LENGTH,
+    difficulty
+  );
+
+  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
+    const seed =
+      (runSeed +
+        index * 2_654_435_761 +
+        attempt * 1_013_904_223) >>>
+      0;
+    const random = new SeededRandom(seed);
+    const selectablePatterns =
+      index === 0
+        ? (["breather"] as const)
+        : index === 1
+          ? (["breather", "slide"] as const)
+          : availablePatterns;
+    const pattern = recoveryDue
+      ? "breather"
+      : random.pick(selectablePatterns);
+    const plan: CoursePlan = {
+      index,
+      seed,
+      difficulty,
+      expectedSpeed,
+      startZ: index * SEGMENT_LENGTH,
+      length: SEGMENT_LENGTH,
+      environment: random.pick(ENVIRONMENTS),
+      pattern,
+      hazards: [],
+      collectibles: [],
+      gaps: [],
+      recommendedActions: [],
+      safeRouteX: 0,
+      intensity
+    };
+
+    createPattern(plan, pattern, random, difficulty);
+    if (validateCoursePlan(plan, previousPlan).length === 0) {
+      return plan;
+    }
+  }
+
+  const fallbackSeed =
+    (runSeed + index * 2_654_435_761 + 0xf4a7c15) >>> 0;
+  const fallbackRandom = new SeededRandom(fallbackSeed);
+  const fallback: CoursePlan = {
     index,
-    seed,
+    seed: fallbackSeed,
+    difficulty,
+    expectedSpeed,
     startZ: index * SEGMENT_LENGTH,
     length: SEGMENT_LENGTH,
-    environment,
-    pattern,
+    environment: fallbackRandom.pick(ENVIRONMENTS),
+    pattern: "breather",
     hazards: [],
     collectibles: [],
     gaps: [],
@@ -449,15 +577,24 @@ export function generateCoursePlan(
     safeRouteX: 0,
     intensity
   };
-
-  createPattern(plan, pattern, random, difficulty);
-  return plan;
+  createPattern(fallback, "breather", fallbackRandom, difficulty);
+  return fallback;
 }
 
-export function validateCoursePlan(plan: CoursePlan): string[] {
+export function validateCoursePlan(
+  plan: CoursePlan,
+  previousPlan?: CoursePlan
+): string[] {
   const errors: string[] = [];
   const actions = [...plan.recommendedActions].sort(
     (left, right) => left.localZ - right.localZ
+  );
+  const hazards = [...plan.hazards].sort(
+    (left, right) => left.localZ - right.localZ
+  );
+  const clearSpacing = requiredClearSpacing(
+    plan.expectedSpeed,
+    plan.difficulty
   );
 
   for (const hazardItem of plan.hazards) {
@@ -473,6 +610,20 @@ export function validateCoursePlan(plan: CoursePlan): string[] {
     ) {
       errors.push(`${hazardItem.id} blocks every route.`);
     }
+    if (
+      hazardItem.action === "jump" &&
+      hazardItem.y + hazardItem.height / 2 + COURSE_SAFETY_MARGIN / 3 >
+        calculateJumpHeight()
+    ) {
+      errors.push(`${hazardItem.id} is too tall for the jump arc.`);
+    }
+    if (
+      hazardItem.action === "dash" &&
+      hazardItem.depth + COURSE_SAFETY_MARGIN * 2 >
+        calculateDashDistance(plan.expectedSpeed)
+    ) {
+      errors.push(`${hazardItem.id} is too deep for one dash.`);
+    }
   }
 
   for (let index = 1; index < actions.length; index += 1) {
@@ -481,7 +632,11 @@ export function validateCoursePlan(plan: CoursePlan): string[] {
     if (
       previous &&
       current &&
-      current.localZ - previous.localZ < ACTION_SPACING
+      current.localZ - previous.localZ <
+        Math.max(
+          MIN_OBSTACLE_SPACING,
+          plan.expectedSpeed * REACTION_SECONDS[plan.difficulty]
+        )
     ) {
       errors.push(
         `${previous.action} and ${current.action} have contradictory timing.`
@@ -489,12 +644,64 @@ export function validateCoursePlan(plan: CoursePlan): string[] {
     }
   }
 
+  const spans = challengeSpans(plan);
+  const previousSpans = previousPlan
+    ? challengeSpans(previousPlan)
+    : [];
+  const spansToValidate =
+    previousSpans.length > 0 && spans.length > 0
+      ? [previousSpans[previousSpans.length - 1]!, ...spans]
+      : spans;
+  for (let index = 1; index < spansToValidate.length; index += 1) {
+    const previous = spansToValidate[index - 1];
+    const current = spansToValidate[index];
+    if (
+      previous &&
+      current &&
+      current.startZ - previous.endZ < clearSpacing
+    ) {
+      errors.push(
+        `${previous.id} and ${current.id} lack the required reaction distance.`
+      );
+    }
+  }
+
+  if (hazards.length > 1) {
+    for (let index = 1; index < hazards.length; index += 1) {
+      const previous = hazards[index - 1];
+      const current = hazards[index];
+      if (
+        previous?.action === "jump" &&
+        current &&
+        current.localZ -
+          current.depth / 2 -
+          (previous.localZ + previous.depth / 2) <
+          calculateJumpDistance(plan.expectedSpeed) +
+            COURSE_SAFETY_MARGIN
+      ) {
+        errors.push(
+          `${previous.id} does not allow landing before ${current.id}.`
+        );
+      }
+    }
+  }
+
   for (const gap of plan.gaps) {
     const length = gap.endZ - gap.startZ;
-    if (gap.kind === "jump" && length > MAX_JUMP_GAP) {
-      errors.push(`Jump gap ${length.toFixed(1)} exceeds safe range.`);
+    if (
+      (gap.kind === "jump" || gap.kind === "collapse") &&
+      length >
+        calculateJumpDistance(plan.expectedSpeed) -
+          COURSE_SAFETY_MARGIN * 2
+    ) {
+      errors.push(`Jump gap ${length.toFixed(1)} exceeds the jump arc.`);
     }
-    if (gap.kind === "wallrun" && length > MAX_WALLRUN_GAP) {
+    if (
+      gap.kind === "wallrun" &&
+      length >
+        plan.expectedSpeed * WALLRUN_DURATION_SECONDS -
+          COURSE_SAFETY_MARGIN
+    ) {
       errors.push(`Wall-run gap ${length.toFixed(1)} exceeds safe range.`);
     }
     if (gap.kind === "movingPlatform" && length > 26) {

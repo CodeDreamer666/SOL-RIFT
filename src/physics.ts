@@ -17,6 +17,40 @@ export interface SweptPlayer {
   halfDepth: number;
 }
 
+export const JUMP_VELOCITY = 8.2;
+export const GRAVITY = 18.5;
+export const JUMP_BUFFER_SECONDS = 0.12;
+export const COYOTE_TIME_SECONDS = 0.1;
+export const LANDING_LOCKOUT_SECONDS = 0;
+export const DASH_DURATION_SECONDS = 0.52;
+export const DASH_SPEED_BOOST = 11;
+export const DASH_COOLDOWN_SECONDS = 0.3;
+
+export function calculateJumpAirtime(): number {
+  return (2 * JUMP_VELOCITY) / GRAVITY;
+}
+
+export function calculateJumpHeight(): number {
+  return (JUMP_VELOCITY * JUMP_VELOCITY) / (2 * GRAVITY);
+}
+
+export function calculateJumpDistance(forwardSpeed: number): number {
+  return forwardSpeed * calculateJumpAirtime();
+}
+
+export function calculateDashDistance(forwardSpeed: number): number {
+  return (
+    (forwardSpeed + DASH_SPEED_BOOST) * DASH_DURATION_SECONDS
+  );
+}
+
+export function shouldConsumeJumpBuffer(
+  jumpBufferTimer: number,
+  grounded: boolean
+): boolean {
+  return jumpBufferTimer > 0 && grounded;
+}
+
 export function sweptPlayerIntersects(
   player: SweptPlayer,
   obstacle: BoxBounds
@@ -53,7 +87,7 @@ export function calculateForwardSpeed(
     startSpeed + elapsedSeconds * acceleration
   );
   const slowedSpeed = slowTimer > 0 ? baseSpeed * 0.62 : baseSpeed;
-  return slowedSpeed + (dashTimer > 0 ? 11 : 0);
+  return slowedSpeed + (dashTimer > 0 ? DASH_SPEED_BOOST : 0);
 }
 
 export function lateralInputToWorldAxis(
@@ -76,13 +110,18 @@ export function canStartAction(
     grounded: boolean;
     sliding: boolean;
     wallrunning: boolean;
+    coyoteTimer?: number;
     dodgeCooldown: number;
     dashCooldown: number;
   }
 ): boolean {
   switch (action) {
     case "jump":
-      return state.grounded || state.wallrunning;
+      return (
+        state.grounded ||
+        state.wallrunning ||
+        (state.coyoteTimer ?? 0) > 0
+      );
     case "slide":
       return state.grounded && !state.sliding;
     case "dodge":

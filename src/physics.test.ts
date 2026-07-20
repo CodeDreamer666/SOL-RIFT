@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   canAttachWallrun,
+  calculateDashDistance,
   calculateForwardSpeed,
+  calculateJumpAirtime,
+  calculateJumpDistance,
   canStartAction,
+  COYOTE_TIME_SECONDS,
+  DASH_COOLDOWN_SECONDS,
+  JUMP_BUFFER_SECONDS,
+  LANDING_LOCKOUT_SECONDS,
   lateralInputToWorldAxis,
   missedLanding,
   screenDirectionToWorldX,
+  shouldConsumeJumpBuffer,
   sweptPlayerIntersects
 } from "./physics";
 
@@ -78,6 +86,45 @@ describe("runner physics safety", () => {
     expect(canStartAction("slide", state)).toBe(false);
     expect(canStartAction("dodge", state)).toBe(false);
     expect(canStartAction("dash", state)).toBe(false);
+  });
+
+  it("allows another jump immediately after the player lands", () => {
+    const landedState = {
+      grounded: true,
+      sliding: false,
+      wallrunning: false,
+      dodgeCooldown: 1,
+      dashCooldown: 1
+    };
+
+    expect(canStartAction("jump", landedState)).toBe(true);
+    expect(canStartAction("jump", landedState)).toBe(true);
+    expect(canStartAction("jump", landedState)).toBe(true);
+    expect(LANDING_LOCKOUT_SECONDS).toBe(0);
+  });
+
+  it("supports buffered jumps and coyote-time jumps", () => {
+    expect(JUMP_BUFFER_SECONDS).toBe(0.12);
+    expect(COYOTE_TIME_SECONDS).toBe(0.1);
+    expect(shouldConsumeJumpBuffer(0.08, true)).toBe(true);
+    expect(shouldConsumeJumpBuffer(0.08, false)).toBe(false);
+    expect(
+      canStartAction("jump", {
+        grounded: false,
+        sliding: false,
+        wallrunning: false,
+        coyoteTimer: 0.04,
+        dodgeCooldown: 0,
+        dashCooldown: 0
+      })
+    ).toBe(true);
+  });
+
+  it("derives jump and dash distance from gameplay timing", () => {
+    expect(calculateJumpAirtime()).toBeCloseTo(0.886, 2);
+    expect(calculateJumpDistance(20)).toBeCloseTo(17.73, 2);
+    expect(calculateDashDistance(20)).toBeCloseTo(16.12, 2);
+    expect(DASH_COOLDOWN_SECONDS).toBe(0.3);
   });
 
   it("maps screen directions correctly for the forward-facing camera", () => {

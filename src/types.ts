@@ -130,6 +130,8 @@ export interface GapDefinition {
 export interface CoursePlan {
   index: number;
   seed: number;
+  difficulty: Difficulty;
+  expectedSpeed: number;
   startZ: number;
   length: number;
   environment: EnvironmentKind;

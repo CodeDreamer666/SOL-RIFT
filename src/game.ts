@@ -12,11 +12,18 @@ import { generateCoursePlan, validateCoursePlan } from "./course";
 import { AudioEngine } from "./audio";
 import {
   canAttachWallrun,
+  COYOTE_TIME_SECONDS,
   calculateForwardSpeed,
   canStartAction,
+  DASH_COOLDOWN_SECONDS,
+  DASH_DURATION_SECONDS,
+  GRAVITY,
+  JUMP_BUFFER_SECONDS,
+  JUMP_VELOCITY,
   lateralInputToWorldAxis,
   missedLanding,
   screenDirectionToWorldX,
+  shouldConsumeJumpBuffer,
   sweptPlayerIntersects,
   type BoxBounds
 } from "./physics";
@@ -79,6 +86,8 @@ interface PlayerState {
   velocityX: number;
   velocityY: number;
   grounded: boolean;
+  jumpBufferTimer: number;
+  coyoteTimer: number;
   sliding: boolean;
   wallrunning: boolean;
   wallSide: -1 | 0 | 1;
@@ -292,6 +301,8 @@ export class RiftGame {
       velocityX: 0,
       velocityY: 0,
       grounded: true,
+      jumpBufferTimer: 0,
+      coyoteTimer: COYOTE_TIME_SECONDS,
       sliding: false,
       wallrunning: false,
       wallSide: 0,
@@ -517,22 +528,17 @@ export class RiftGame {
       grounded: this.player.grounded,
       sliding: this.player.sliding,
       wallrunning: this.player.wallrunning,
+      coyoteTimer: this.player.coyoteTimer,
       dodgeCooldown: this.player.dodgeCooldown,
       dashCooldown: this.player.dashCooldown
     };
 
-    if (action === "jump" && canStartAction("jump", state)) {
-      if (this.player.wallrunning) {
-        this.player.velocityX = -this.player.wallSide * 6.5;
-        this.player.wallrunning = false;
-        this.player.wallSide = 0;
+    if (action === "jump") {
+      if (canStartAction("jump", state)) {
+        this.startJump();
+      } else {
+        this.player.jumpBufferTimer = JUMP_BUFFER_SECONDS;
       }
-      this.player.sliding = false;
-      this.player.slideTimer = 0;
-      this.player.velocityY = 8.2;
-      this.player.grounded = false;
-      this.registerAction("jump");
-      this.audio.play("jump");
       return true;
     }
 
@@ -560,8 +566,8 @@ export class RiftGame {
     }
 
     if (action === "dash" && canStartAction("dash", state)) {
-      this.player.dashTimer = 0.52;
-      this.player.dashCooldown = 2.45;
+      this.player.dashTimer = DASH_DURATION_SECONDS;
+      this.player.dashCooldown = DASH_COOLDOWN_SECONDS;
       this.cameraImpact = Math.max(this.cameraImpact, 0.45);
       this.registerAction("dash");
       this.spawnBurst(
@@ -581,6 +587,22 @@ export class RiftGame {
   private registerAction(action: ActionName): void {
     this.player.lastAction = action;
     this.player.lastActionAt = this.run.elapsed;
+  }
+
+  private startJump(): void {
+    if (this.player.wallrunning) {
+      this.player.velocityX = -this.player.wallSide * 6.5;
+      this.player.wallrunning = false;
+      this.player.wallSide = 0;
+    }
+    this.player.sliding = false;
+    this.player.slideTimer = 0;
+    this.player.jumpBufferTimer = 0;
+    this.player.coyoteTimer = 0;
+    this.player.velocityY = JUMP_VELOCITY;
+    this.player.grounded = false;
+    this.registerAction("jump");
+    this.audio.play("jump");
   }
 
   updateSettings(settings: Settings): void {
@@ -651,6 +673,11 @@ export class RiftGame {
     const config = DIFFICULTIES[this.run.difficulty];
     this.run.elapsed += dt;
     this.player.slideTimer = Math.max(0, this.player.slideTimer - dt);
+    this.player.jumpBufferTimer = Math.max(
+      0,
+      this.player.jumpBufferTimer - dt
+    );
+    this.player.coyoteTimer = Math.max(0, this.player.coyoteTimer - dt);
     this.player.dashTimer = Math.max(0, this.player.dashTimer - dt);
     this.player.dashCooldown = Math.max(0, this.player.dashCooldown - dt);
     this.player.dodgeTimer = Math.max(0, this.player.dodgeTimer - dt);
@@ -790,7 +817,7 @@ export class RiftGame {
         this.player.wallSide = 0;
       }
     } else {
-      this.player.velocityY -= 18.5 * dt;
+      this.player.velocityY -= GRAVITY * dt;
       this.player.y += this.player.velocityY * dt;
     }
 
@@ -825,9 +852,21 @@ export class RiftGame {
       this.player.y = 0;
       this.player.velocityY = 0;
       this.player.grounded = true;
+      this.player.coyoteTimer = COYOTE_TIME_SECONDS;
       this.player.wallrunning = false;
       this.player.wallSide = 0;
+      if (
+        shouldConsumeJumpBuffer(
+          this.player.jumpBufferTimer,
+          this.player.grounded
+        )
+      ) {
+        this.startJump();
+      }
     } else {
+      if (this.player.grounded) {
+        this.player.coyoteTimer = COYOTE_TIME_SECONDS;
+      }
       this.player.grounded = false;
     }
 
@@ -1182,8 +1221,14 @@ export class RiftGame {
   }
 
   private addSegment(difficulty: Difficulty, seed: number): void {
-    const plan = generateCoursePlan(this.nextSegmentIndex, difficulty, seed);
-    const errors = validateCoursePlan(plan);
+    const previousPlan = this.segments[this.segments.length - 1]?.plan;
+    const plan = generateCoursePlan(
+      this.nextSegmentIndex,
+      difficulty,
+      seed,
+      previousPlan
+    );
+    const errors = validateCoursePlan(plan, previousPlan);
     if (errors.length > 0) {
       throw new Error(`Invalid generated sector: ${errors.join(" ")}`);
     }
